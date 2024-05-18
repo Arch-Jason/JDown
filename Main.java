@@ -39,13 +39,13 @@ public class Main {
         downloadButton.addActionListener(new ActionListener() {
             @Override
             public void actionPerformed(ActionEvent e) {
-                int size = 0;
+                long size = 0;
                 HttpURLConnection conn = null;
                 try {
                     String url = Url.getText();
                     conn = (HttpURLConnection) new URI(url).toURL().openConnection();
                     conn.setRequestMethod("HEAD");
-                    size = Integer.parseInt(String.valueOf(conn.getContentLengthLong()));
+                    size = conn.getContentLengthLong();
                     filename = new File(new URI(url).toURL().getPath()).getName();
                 } catch (Exception err) {
                     JOptionPane.showMessageDialog(frame, "Invalid URL:\n" + err.toString());
@@ -53,16 +53,20 @@ public class Main {
                 }
                 int threadNum = Integer.parseInt(Threads.getText());
 
-                int[] partSizes = new int[threadNum + 1];
+                if (size < threadNum) {
+                    threadNum = (int) size;  // Ensure each thread has at least 1 byte to download
+                }
+
+                long[] partSizes = new long[threadNum + 1];
                 partSizes[0] = 0; // Start of the first part
-                int totalSize = size; // Total size of the file to be downloaded
-                int eachPartSize = totalSize / threadNum; // Size each thread should download
+                long totalSize = size; // Total size of the file to be downloaded
+                long eachPartSize = totalSize / threadNum; // Size each thread should download
                 for (int i = 1; i < threadNum; i++) {
                     partSizes[i] = partSizes[i - 1] + eachPartSize;
                 }
                 partSizes[threadNum] = totalSize; // End of the last part is the total size
                 if (size % threadNum != 0) {
-                    int lastPartExtra = totalSize - (eachPartSize * threadNum);
+                    long lastPartExtra = totalSize - (eachPartSize * threadNum);
                     partSizes[threadNum] = partSizes[threadNum - 1] + eachPartSize + lastPartExtra;
                 }
 
@@ -95,10 +99,10 @@ public class Main {
     }
 
     private static class MultiThreadDownload extends Thread {
-        int start, end;
+        long start, end;
         String url;
         HttpURLConnection conn;
-        public MultiThreadDownload(int start, int end, String url) throws URISyntaxException, IOException {
+        public MultiThreadDownload(long start, long end, String url) throws URISyntaxException, IOException {
             this.start = start;
             this.end = end;
             this.url = url;
@@ -127,7 +131,7 @@ public class Main {
         }
 
         public float getProgress() {
-            int full_size = end - start + 1;
+            long full_size = end - start + 1;
             return ((float) (new File(destination + "/." + filename + "-" + start + "-" + end + ".part").length()) / (float) full_size) * 100;
         }
     }
@@ -151,14 +155,15 @@ public class Main {
         }
         @Override
         public void run() {
-            while (true) {
-                for(int i = 0; i < threadNum; i++)
-                    progressBars[i].setValue((int) multiThreadDownload[i].getProgress());
-                try {
+            try {
+                while (!Thread.currentThread().isInterrupted()) {
+                    for (int i = 0; i < threadNum; i++) {
+                        progressBars[i].setValue((int) multiThreadDownload[i].getProgress());
+                    }
                     Thread.sleep(100);
-                } catch (InterruptedException e) {
-                    throw new RuntimeException(e);
                 }
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt(); // Restore the interrupt status
             }
         }
     }
@@ -166,42 +171,42 @@ public class Main {
     private class checkDone extends Thread {
         private MultiThreadDownload[] multiThreadDownloads;
         private int threadNum;
-        private int[] partSizes;
-        public checkDone(int threadNum, int[] partSizes, MultiThreadDownload[] multiThreadDownloads) {
+        private long[] partSizes;
+        public checkDone(int threadNum, long[] partSizes, MultiThreadDownload[] multiThreadDownloads) {
             this.multiThreadDownloads = multiThreadDownloads;
             this.threadNum = threadNum;
             this.partSizes = partSizes;
         }
         @Override
         public void run() {
-            for (MultiThreadDownload thread : multiThreadDownloads) {
-                try {
+            try {
+                for (MultiThreadDownload thread : multiThreadDownloads) {
                     thread.join();
-                } catch (InterruptedException e) {
-                    throw new RuntimeException(e);
                 }
+            } catch (InterruptedException e) {
+                throw new RuntimeException(e);
             }
             progressBarUpdater.interrupt();
             State.setText("Merging parts into one.");
             List<File> fileParts = new ArrayList<>();
             for (int i = 0; i < threadNum; i++) {
-                int start = partSizes[i];
-                int end = partSizes[i + 1] - 1;
+                long start = partSizes[i];
+                long end = partSizes[i + 1] - 1;
                 fileParts.add(new File(destination + "/." + filename + "-" + start + "-" + end + ".part"));
             }
             File outputFile = new File(destination + "/" + filename);
-            try (BufferedOutputStream dos = new BufferedOutputStream(new FileOutputStream(outputFile))){
-                for(File part : fileParts) {
+            try (BufferedOutputStream dos = new BufferedOutputStream(new FileOutputStream(outputFile))) {
+                for (File part : fileParts) {
                     try (BufferedInputStream inputStream = new BufferedInputStream(new FileInputStream(part))) {
-                        byte[] buffer = new byte[8];
+                        byte[] buffer = new byte[1024];
                         int bytesRead;
                         while ((bytesRead = inputStream.read(buffer)) != -1) {
                             dos.write(buffer, 0, bytesRead);
                         }
                     }
                 }
-                for(File part: fileParts) {
-                    if(!part.delete()) {
+                for (File part : fileParts) {
+                    if (!part.delete()) {
                         throw new IOException("Cannot delete part files.");
                     }
                 }
